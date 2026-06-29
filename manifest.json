@@ -1,0 +1,18 @@
+{
+  "$schema": "schema/schema.json",
+  "id": "com.ulul.remoteworkspace",
+  "name": "Remote Workspace",
+  "mainClass": "com.ulul.remoteworkspace.Main",
+  "version": "1.0.0",
+  "description": "Hubungkan ke server development lewat SSH/SFTP dan edit file remote langsung di Xed-Editor (file tree + tab editor native), plus jalankan command di server tanpa membebani penyimpanan/kinerja Android.",
+  "author": {
+    "displayName": "Ulul",
+    "github": "ululamri"
+  },
+  "minAppVersion": 87,
+  "targetAppVersion": 87,
+  "license": "MIT",
+  "tags": ["ssh", "sftp", "remote", "terminal", "tools"],
+  "hasSettings": true,
+  "repository": "https://github.com/ululamri/xed-remote-workspace"
+}
