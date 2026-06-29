@@ -4,7 +4,6 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.os.Bundle
 import android.text.InputType
-import android.view.Gravity
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -146,7 +145,6 @@ class Main(context: ExtensionContext) : ExtensionAPI(context) {
 
         val scrollView = ScrollView(activity).apply {
             addView(layout)
-            gravity = Gravity.TOP
         }
 
         AlertDialog.Builder(activity)
