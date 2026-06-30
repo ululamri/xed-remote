@@ -29,7 +29,12 @@ permissions:
   contents: read
 
 env:
-  XED_EDITOR_REF: "73835433"
+  # Must be the FULL 40-character commit SHA, not the abbreviated one Xed-Editor's own crash
+  # reporter shows (e.g. "73835433"). actions/checkout treats a short SHA as a branch/tag name
+  # pattern and fails to find it - only a full SHA lets it fetch the exact commit directly.
+  # To resolve a short SHA to the full one: github.com/Xed-Editor/Xed-Editor/commit/<short-sha>
+  # redirects to the full one, or check the corresponding release page.
+  XED_EDITOR_REF: "73835433e06a8e97352986c27882622ba6628867"
   SDK_CACHE_VERSION: "v1"
 
 jobs:
