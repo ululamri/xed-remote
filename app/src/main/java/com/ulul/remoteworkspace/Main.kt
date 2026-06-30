@@ -2,6 +2,7 @@ package com.ulul.remoteworkspace
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Context
 import android.os.Bundle
 import android.text.InputType
 import android.widget.EditText
@@ -9,21 +10,44 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.annotation.Keep
-import androidx.compose.runtime.Composable
+import com.rk.activities.main.MainActivity
 import com.rk.commands.ActionContext
+import com.rk.commands.CommandContext
 import com.rk.commands.CommandProvider
 import com.rk.commands.GlobalCommand
+import com.rk.extension.Extension
 import com.rk.extension.ExtensionAPI
-import com.rk.extension.ExtensionContext
+import com.rk.filetree.addProject
+import com.rk.filetree.removeProject
 import com.rk.icons.Icon
+import com.rk.utils.application
 import com.rk.utils.toast
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
+/**
+ * Targets the extension API actually shipped in Xed-Editor v3.2.9 / versionCode 87 (commit
+ * 73835433) - considerably more minimal than the newer "ExtensionContext"-based API: ExtensionAPI
+ * takes no constructor argument, is instantiated via a no-arg constructor, and only has
+ * onExtensionLoaded(extension) / onUninstalled(extension) - no SettingsContent, no built-in
+ * command/scope/settings helpers. Everything those would have given us is recreated by hand
+ * below. The good news: FileObject, EditorManager and the sidebar file tree (here exposed as
+ * plain top-level functions in com.rk.filetree, simpler than the newer DrawerViewModel API) are
+ * all present and unchanged, so native file-tree/editor-tab integration still works.
+ */
 @Keep
 @Suppress("unused")
-class Main(context: ExtensionContext) : ExtensionAPI(context) {
+class Main : ExtensionAPI() {
 
-    private val toggleCommand = object : GlobalCommand() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val commandContext = CommandContext { MainActivity.instance!!.viewModel }
+
+    private fun prefs() =
+        application!!.getSharedPreferences("com.ulul.remoteworkspace_prefs", Context.MODE_PRIVATE)
+
+    private val toggleCommand = object : GlobalCommand(commandContext) {
         override val id: String = "com.ulul.remoteworkspace.toggle"
 
         override fun getLabel(): String =
@@ -32,7 +56,7 @@ class Main(context: ExtensionContext) : ExtensionAPI(context) {
         override fun getIcon(): Icon = Icon.TextIcon("SSH")
 
         override fun action(actionContext: ActionContext) {
-            context.scope.launch {
+            scope.launch {
                 if (SshConnectionManager.isConnected) {
                     SshConnectionManager.disconnect()
                     toast("Terputus dari server")
@@ -44,12 +68,9 @@ class Main(context: ExtensionContext) : ExtensionAPI(context) {
         }
     }
 
-    // Workaround for a bug in Xed-Editor's own navigation (ExtensionDetail.kt builds the
-    // settings route with the literal text "{extensionId}" instead of substituting the real
-    // extension id, so ExtensionSettings always receives a null extension - the settings gear
-    // icon shows "extension not found" for every extension with hasSettings=true, not just this
-    // one). Until that's fixed upstream, configuration happens through this dialog instead.
-    private val configureCommand = object : GlobalCommand() {
+    // No SettingsContent hook exists in this API version, so configuration happens through a
+    // plain AlertDialog instead, triggered from the Command Palette.
+    private val configureCommand = object : GlobalCommand(commandContext) {
         override val id: String = "com.ulul.remoteworkspace.configure"
         override fun getLabel(): String = "Konfigurasi Remote Workspace"
         override fun getIcon(): Icon = Icon.TextIcon("CFG")
@@ -58,10 +79,9 @@ class Main(context: ExtensionContext) : ExtensionAPI(context) {
         }
     }
 
-    // Same reasoning as configureCommand: the "Buka sebagai Workspace" button normally lives in
-    // SettingsContent, which is unreachable until the upstream navigation bug is fixed. This
-    // command does the same thing (add/remove the sidebar file tree tab for the remote root).
-    private val workspaceToggleCommand = object : GlobalCommand() {
+    // Mirrors what used to be the "Buka sebagai Workspace" / "Tutup Workspace" Settings buttons -
+    // also unreachable now without SettingsContent, so it's a command instead.
+    private val workspaceToggleCommand = object : GlobalCommand(commandContext) {
         override val id: String = "com.ulul.remoteworkspace.toggleworkspace"
 
         override fun getLabel(): String =
@@ -72,13 +92,13 @@ class Main(context: ExtensionContext) : ExtensionAPI(context) {
         override fun action(actionContext: ActionContext) {
             val existing = SshConnectionManager.openedRoot
             if (existing != null) {
-                com.rk.activities.main.MainActivity.instance?.drawerViewModel?.removeFileTreeTab(existing, false)
+                removeProject(existing, false)
                 SshConnectionManager.openedRoot = null
                 toast("Workspace ditutup")
                 return
             }
 
-            context.scope.launch {
+            scope.launch {
                 if (!SshConnectionManager.isConnected) {
                     val ok = SshConnectionManager.connect()
                     if (!ok) {
@@ -92,12 +112,10 @@ class Main(context: ExtensionContext) : ExtensionAPI(context) {
                     return@launch
                 }
                 val root = RemoteFileObject(SshConnectionManager.remoteBasePath, rootAttrs)
-                val activity = com.rk.activities.main.MainActivity.instance
-                if (activity == null) {
-                    toast("Tidak bisa mengakses jendela utama")
-                    return@launch
-                }
-                activity.drawerViewModel.addFileTreeTab(root, false)
+                // save=false: a remote FileObject must never be embedded in a persisted drawer
+                // tab list (see RemoteFileObject's class doc) - it would throw or, worse, corrupt
+                // serialization for every other open tab too.
+                addProject(root, false)
                 SshConnectionManager.openedRoot = root
                 toast("Workspace dibuka di sidebar")
             }
@@ -143,9 +161,7 @@ class Main(context: ExtensionContext) : ExtensionAPI(context) {
             alpha = 0.7f
         })
 
-        val scrollView = ScrollView(activity).apply {
-            addView(layout)
-        }
+        val scrollView = ScrollView(activity).apply { addView(layout) }
 
         AlertDialog.Builder(activity)
             .setTitle("Konfigurasi Remote Workspace")
@@ -161,14 +177,16 @@ class Main(context: ExtensionContext) : ExtensionAPI(context) {
                 SshConnectionManager.privateKeyPassphrase = keyPassField.text.toString()
                 SshConnectionManager.remoteBasePath = remoteField.text.toString().trim().ifEmpty { "/" }
 
-                context.settings.putString(KEY_HOST, SshConnectionManager.host)
-                context.settings.putInt(KEY_PORT, SshConnectionManager.port)
-                context.settings.putString(KEY_USER, SshConnectionManager.username)
-                context.settings.putString(KEY_AUTH, if (useKey) "key" else "password")
-                context.settings.putString(KEY_PASSWORD, SshConnectionManager.password)
-                context.settings.putString(KEY_KEY_PATH, SshConnectionManager.privateKeyPath)
-                context.settings.putString(KEY_KEY_PASSPHRASE, SshConnectionManager.privateKeyPassphrase)
-                context.settings.putString(KEY_REMOTE_PATH, SshConnectionManager.remoteBasePath)
+                prefs().edit()
+                    .putString(KEY_HOST, SshConnectionManager.host)
+                    .putInt(KEY_PORT, SshConnectionManager.port)
+                    .putString(KEY_USER, SshConnectionManager.username)
+                    .putString(KEY_AUTH, if (useKey) "key" else "password")
+                    .putString(KEY_PASSWORD, SshConnectionManager.password)
+                    .putString(KEY_KEY_PATH, SshConnectionManager.privateKeyPath)
+                    .putString(KEY_KEY_PASSPHRASE, SshConnectionManager.privateKeyPassphrase)
+                    .putString(KEY_REMOTE_PATH, SshConnectionManager.remoteBasePath)
+                    .apply()
 
                 toast("Konfigurasi disimpan. Gunakan \"Hubungkan Remote Workspace\" untuk connect.")
             }
@@ -176,37 +194,31 @@ class Main(context: ExtensionContext) : ExtensionAPI(context) {
             .show()
     }
 
-    override fun onExtensionLoaded() {
-        SshConnectionManager.host = context.settings.getString(KEY_HOST, SshConnectionManager.host)
-        SshConnectionManager.port = context.settings.getInt(KEY_PORT, SshConnectionManager.port)
-        SshConnectionManager.username = context.settings.getString(KEY_USER, SshConnectionManager.username)
-        SshConnectionManager.authMethod = if (context.settings.getString(KEY_AUTH, "password") == "key") {
+    override fun onExtensionLoaded(extension: Extension) {
+        val p = prefs()
+        SshConnectionManager.host = p.getString(KEY_HOST, SshConnectionManager.host) ?: SshConnectionManager.host
+        SshConnectionManager.port = p.getInt(KEY_PORT, SshConnectionManager.port)
+        SshConnectionManager.username = p.getString(KEY_USER, SshConnectionManager.username) ?: SshConnectionManager.username
+        SshConnectionManager.authMethod = if (p.getString(KEY_AUTH, "password") == "key") {
             AuthMethod.PRIVATE_KEY
         } else {
             AuthMethod.PASSWORD
         }
-        SshConnectionManager.password = context.settings.getString(KEY_PASSWORD, SshConnectionManager.password)
-        SshConnectionManager.privateKeyPath = context.settings.getString(KEY_KEY_PATH, SshConnectionManager.privateKeyPath)
+        SshConnectionManager.password = p.getString(KEY_PASSWORD, SshConnectionManager.password) ?: SshConnectionManager.password
+        SshConnectionManager.privateKeyPath =
+            p.getString(KEY_KEY_PATH, SshConnectionManager.privateKeyPath) ?: SshConnectionManager.privateKeyPath
         SshConnectionManager.privateKeyPassphrase =
-            context.settings.getString(KEY_KEY_PASSPHRASE, SshConnectionManager.privateKeyPassphrase)
-        SshConnectionManager.remoteBasePath = context.settings.getString(KEY_REMOTE_PATH, SshConnectionManager.remoteBasePath)
+            p.getString(KEY_KEY_PASSPHRASE, SshConnectionManager.privateKeyPassphrase) ?: SshConnectionManager.privateKeyPassphrase
+        SshConnectionManager.remoteBasePath =
+            p.getString(KEY_REMOTE_PATH, SshConnectionManager.remoteBasePath) ?: SshConnectionManager.remoteBasePath
 
         CommandProvider.registerCommand(toggleCommand)
         CommandProvider.registerCommand(configureCommand)
         CommandProvider.registerCommand(workspaceToggleCommand)
-        context.logInfo("Remote Workspace extension loaded (not connected automatically).")
     }
 
-    override fun onInstalled() {
-        // Defaults are applied on first load.
-    }
-
-    override fun onUpdated() {
-        // No migration needed between versions yet.
-    }
-
-    override fun onUninstalled() {
-        context.scope.launch { SshConnectionManager.disconnect() }
+    override fun onUninstalled(extension: Extension) {
+        scope.launch { SshConnectionManager.disconnect() }
         CommandProvider.unregisterCommand(toggleCommand)
         CommandProvider.unregisterCommand(configureCommand)
         CommandProvider.unregisterCommand(workspaceToggleCommand)
@@ -219,11 +231,6 @@ class Main(context: ExtensionContext) : ExtensionAPI(context) {
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
     override fun onActivityStarted(activity: Activity) {}
     override fun onActivityStopped(activity: Activity) {}
-
-    @Composable
-    override fun SettingsContent() {
-        RemoteWorkspaceSettingsScreen(context)
-    }
 
     companion object {
         const val KEY_HOST = "host"

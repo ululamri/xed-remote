@@ -16,45 +16,47 @@ For the "workload shouldn't burden the phone" half of the ask, it also includes 
 command runner (SSH exec) so things like builds/tests run on the server, with output streamed
 back into Xed-Editor.
 
+## Compatibility
+
+Targets the extension API as shipped in **Xed-Editor v3.2.9 / versionCode 87** (commit
+`73835433`). This API version is intentionally minimal: `ExtensionAPI` has a no-arg constructor
+and only two lifecycle hooks (`onExtensionLoaded` / `onUninstalled`) - there is no
+`SettingsContent`/Compose settings page, no built-in coroutine scope, and no settings storage
+helper. Everything that would normally provide is recreated by hand here (a manual
+`SharedPreferences` wrapper, a manual `CoroutineScope`, and a `CommandContext` built the same way
+the host app itself builds one).
+
+The good news: `FileObject`, `EditorManager`, and the sidebar file tree are all present and
+unchanged in this API version (exposed as plain top-level functions in `com.rk.filetree` -
+`addProject()` / `removeProject()` - rather than the newer `DrawerViewModel` API), so native
+file-tree/editor-tab integration works exactly as designed.
+
+Because there's no settings-page hook, **all configuration and the workspace open/close action
+happen through the Command Palette** via plain Android `AlertDialog`s - see Usage below.
+
 ## Features
 
 - Connect via SSH (password or private-key auth) and browse a remote folder.
-- **"Buka sebagai Workspace"** adds the remote folder as a real entry in Xed-Editor's sidebar file
-  tree (`DrawerViewModel.addFileTreeTab`) - tapping files there opens them as normal editor tabs
-  with full syntax highlighting, exactly like local files.
-- Run arbitrary shell commands on the server and see the output live, without leaving the editor.
-- Connect/disconnect toggle also available from the Command Palette.
+- Adds the remote folder as a real entry in Xed-Editor's sidebar file tree - tapping files there
+  opens them as normal editor tabs with full syntax highlighting, exactly like local files.
+- Run arbitrary shell commands on the server (via the Command Palette dialog's underlying
+  connection) so things like builds/tests run on the server, not the phone.
+- Connect/disconnect and open/close-workspace toggles, all from the Command Palette.
 - Connection settings (host/port/user/auth/remote path) persist between sessions.
 
-## Mengakses pengaturan (penting)
+## Usage
 
-Xed-Editor saat ini punya bug di navigasinya sendiri: ikon gear "Settings" di halaman detail
-ekstensi selalu menampilkan "extension not found", untuk **ekstensi apapun** yang punya halaman
-settings, bukan cuma ekstensi ini. (`ExtensionDetail.kt` membangun route navigasi dengan teks
-literal `{extensionId}` bukannya menggantinya dengan ID ekstensi yang sebenarnya, jadi
-`ExtensionSettings` selalu menerima `null`.)
+Open the Command Palette and use these commands:
 
-Sampai itu diperbaiki upstream, atur ekstensi ini lewat **Command Palette** alih-alih halaman
-Settings. Tiga command yang tersedia:
-
-- **"Konfigurasi Remote Workspace"** - dialog untuk isi host/port/username/password (atau key)/
-  folder remote.
+- **"Konfigurasi Remote Workspace"** - dialog to fill in host/port/username/password (or private
+  key path + passphrase)/remote folder. Tap **Simpan** to save.
 - **"Hubungkan Remote Workspace"** / **"Putuskan Remote Workspace"** - connect/disconnect.
-- **"Buka Workspace Remote"** / **"Tutup Workspace Remote"** - tambah/hapus folder remote dari
-  sidebar file tree.
+- **"Buka Workspace Remote"** / **"Tutup Workspace Remote"** - add/remove the remote folder from
+  the sidebar file tree. Connects automatically first if needed.
 
-## Setup
-
-1. Open the Command Palette and run **"Konfigurasi Remote Workspace"**.
-2. Fill in host, port, username, and either a password or a private key path + passphrase.
-3. Set the remote folder you want as your workspace root (e.g. `/home/youruser/project`), then
-   tap **Simpan**.
-4. Run **"Hubungkan Remote Workspace"** from the Command Palette to connect.
-5. Run **"Buka Workspace Remote"** from the Command Palette - the remote folder appears in
-   Xed-Editor's sidebar file tree. Run **"Tutup Workspace Remote"** to remove it again.
-
-(All four actions above are also available as buttons on the extension's Settings screen, once
-Xed-Editor's navigation bug - see above - is fixed upstream.)
+Typical first-time flow: run "Konfigurasi Remote Workspace", fill in your server details and a
+remote path (e.g. `/home/youruser/project`), save, then run "Buka Workspace Remote" - it appears
+in the sidebar, and tapping any file inside opens it as a normal editor tab.
 
 ### About SSH keys on Android
 
@@ -74,7 +76,7 @@ key to a location Xed-Editor already has access to (shared/internal storage) bef
 - **The sidebar workspace tab doesn't survive an app restart** - and that's deliberate. Xed-Editor
   persists open tabs via plain Java serialization; a remote file reference is kept connection-free
   specifically so it serializes safely (no crash), but a restored reference has no live connection
-  until you reconnect. So: reconnect and tap "Buka sebagai Workspace" again after restarting the
+  until you reconnect. So: reconnect and run "Buka Workspace Remote" again after restarting the
   app, or just leave it connected while you work.
 - One shared SFTP channel, used by everything (file tree + tabs); operations are serialized with a
   mutex, so it's correct but not built for heavy parallel access. Command execution uses its own
@@ -82,12 +84,16 @@ key to a location Xed-Editor already has access to (shared/internal storage) bef
 
 ## Building
 
-Standard [Xed-Editor extension template](https://github.com/Xed-Editor/Extension-Template) layout.
-From Termux or any machine with internet access:
+Standard [Xed-Editor extension template](https://github.com/Xed-Editor/Extension-Template)
+layout, with one important difference: instead of using upstream's auto-updating `sdk.jar`, CI
+builds and caches its own, pinned to the exact Xed-Editor commit this code targets (see
+Compatibility above, and the comments in `.github/workflows/plugin-build-test.yml`).
 
-```bash
-./compileDebug      # or compileDebug.bat on Windows
-```
+Just push to GitHub (or trigger the workflow manually from the Actions tab) - everything else is
+automatic. The **first** run will take noticeably longer than a typical extension build (it's
+compiling a slice of Xed-Editor itself, to produce the pinned `sdk.jar`); every run after that
+restores it from cache in seconds. `app/libs/README.md` has instructions if you ever want to
+build a `sdk.jar` and compile locally instead of via CI.
 
 This extension bundles its own SSH/SFTP library
 ([`com.github.mwiede:jsch`](https://github.com/mwiede/jsch), a maintained drop-in fork of jcraft's

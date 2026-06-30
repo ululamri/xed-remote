@@ -162,7 +162,17 @@ tasks.register<Delete>("cleanApkOutputs") {
 
 tasks.named("preBuild").configure {
     dependsOn("cleanApkOutputs")
-    dependsOn("downloadLatestJar")
+    // NOTE: downloadLatestJar is intentionally NOT wired in here.
+    //
+    // This extension targets the extension API as shipped in Xed-Editor v3.2.9 / versionCode 87
+    // (commit 73835433) - a pinned, older API surface with a no-arg ExtensionAPI constructor and
+    // no ExtensionContext/SettingsContent. The upstream sdk-latest release tracks `main`, which
+    // has since moved to a newer, incompatible API. Auto-downloading it here would silently
+    // replace libs/sdk.jar with a version this code doesn't match, breaking the build (or worse,
+    // compiling clean against the wrong API and crashing at runtime on install, the way it did
+    // before this was pinned). See .github/workflows/plugin-build-test.yml for how libs/sdk.jar
+    // is built for the pinned version, and the README for how to update the pin if the target
+    // Xed-Editor version changes.
 }
 
 // --------------- generate the final zip file -----------------

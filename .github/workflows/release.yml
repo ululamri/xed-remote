@@ -4,6 +4,10 @@ name: Release Extension
 # Trigger by pushing a version tag from Termux, e.g.:
 #   git tag v1.0.0
 #   git push origin v1.0.0
+#
+# Like plugin-build-test.yml, this builds (or restores from cache) a pinned sdk.jar matching
+# the exact Xed-Editor commit this extension targets, instead of using upstream's auto-updating
+# "sdk-latest". See that workflow's comments, and the README, for why.
 
 on:
   push:
@@ -13,9 +17,73 @@ on:
 permissions:
   contents: write
 
+env:
+  XED_EDITOR_REF: "73835433"
+  SDK_CACHE_VERSION: "v1"
+
 jobs:
+  build-pinned-sdk:
+    name: Build pinned Xed-Editor SDK (v87)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Cache pinned sdk.jar
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: pinned-sdk/sdk.jar
+          key: xed-sdk-${{ env.XED_EDITOR_REF }}-${{ env.SDK_CACHE_VERSION }}
+
+      - name: Checkout Xed-Editor at pinned commit
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: Xed-Editor/Xed-Editor
+          ref: ${{ env.XED_EDITOR_REF }}
+          submodules: recursive
+          path: xed-editor-src
+
+      - name: Setup JDK
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Make scripts executable
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          chmod +x xed-editor-src/gradlew
+          chmod +x xed-editor-src/plugin-sdk/gradlew
+          chmod +x xed-editor-src/plugin-sdk/build-auto.sh
+          chmod +x xed-editor-src/plugin-sdk/setup.sh
+
+      - name: Build core:main (debug - no signing required)
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: xed-editor-src
+        run: ./gradlew :core:main:assembleDebug --no-daemon
+
+      - name: Generate sdk.jar via plugin-sdk
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: xed-editor-src/plugin-sdk
+        run: bash build-auto.sh
+
+      - name: Stage sdk.jar for caching
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p pinned-sdk
+          cp xed-editor-src/plugin-sdk/output/sdk.jar pinned-sdk/sdk.jar
+
+      - name: Upload sdk.jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinned-sdk-jar-release
+          path: pinned-sdk/sdk.jar
+          retention-days: 90
+
   release:
     name: Build and Release
+    needs: build-pinned-sdk
     runs-on: ubuntu-latest
 
     steps:
@@ -27,6 +95,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+
+      - name: Use pinned sdk.jar
+        uses: actions/download-artifact@v4
+        with:
+          name: pinned-sdk-jar-release
+          path: app/libs
 
       - name: Make scripts executable
         run: chmod +x ./gradlew ./compileRelease

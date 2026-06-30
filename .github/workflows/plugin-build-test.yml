@@ -1,5 +1,20 @@
 name: Extension Compile Test
 
+# This extension targets the extension API as shipped in Xed-Editor v3.2.9 / versionCode 87
+# (commit 73835433) - see app/build.gradle.kts and README.md for why. Xed-Editor's own
+# auto-published sdk.jar (tag "sdk-latest") tracks `main`, which has since moved to a newer,
+# incompatible extension API - so this workflow builds and pins its OWN sdk.jar from the exact
+# commit this code matches, instead of using the upstream auto-updating one.
+#
+# Building that pinned sdk.jar means compiling a slice of the actual Xed-Editor app from source
+# (its :core:main module and everything it depends on), which is heavy - so it's cached with a
+# fixed key tied to XED_EDITOR_REF below. After the first successful run, subsequent runs restore
+# it from cache in seconds instead of rebuilding it.
+#
+# If Xed-Editor releases a new version with a stable, documented extension API and you want to
+# move to it: update XED_EDITOR_REF (and SDK_CACHE_VERSION, to bust the old cache), update
+# Main.kt to match the new ExtensionAPI shape, then re-run.
+
 on:
   schedule:
     - cron: "0 */24 * * *"
@@ -11,34 +26,111 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read 
+  contents: read
+
+env:
+  XED_EDITOR_REF: "73835433"
+  SDK_CACHE_VERSION: "v1"
 
 jobs:
-  build:
-    name: Extension Compile Test
+  build-pinned-sdk:
+    name: Build pinned Xed-Editor SDK (v87)
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout source code
+      - name: Cache pinned sdk.jar
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: pinned-sdk/sdk.jar
+          key: xed-sdk-${{ env.XED_EDITOR_REF }}-${{ env.SDK_CACHE_VERSION }}
+
+      - name: Checkout Xed-Editor at pinned commit
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: Xed-Editor/Xed-Editor
+          ref: ${{ env.XED_EDITOR_REF }}
+          submodules: recursive
+          path: xed-editor-src
+
+      - name: Setup JDK
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Make scripts executable
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          chmod +x xed-editor-src/gradlew
+          chmod +x xed-editor-src/plugin-sdk/gradlew
+          chmod +x xed-editor-src/plugin-sdk/build-auto.sh
+          chmod +x xed-editor-src/plugin-sdk/setup.sh
+
+      # :core:main is a library module (android-library plugin), so this needs no signing
+      # config/keystore - those only apply to the :app module's APK packaging, which this never
+      # touches. Building it transitively builds everything it depends on (core:components,
+      # core:resources, core:extension, core:terminal-view/emulator, editor, editor-lsp,
+      # language-textmate), producing a classes.jar per module.
+      - name: Build core:main (debug - no signing required)
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: xed-editor-src
+        run: ./gradlew :core:main:assembleDebug --no-daemon
+
+      # plugin-sdk is Xed-Editor's own independent Gradle project for exactly this purpose: it
+      # collects every classes.jar produced above and shades them into one sdk.jar - the same
+      # mechanism Xed-Editor's own CI uses to publish "sdk-latest", just run against this pinned
+      # commit instead of whatever main currently is.
+      - name: Generate sdk.jar via plugin-sdk
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: xed-editor-src/plugin-sdk
+        run: bash build-auto.sh
+
+      - name: Stage sdk.jar for caching
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p pinned-sdk
+          cp xed-editor-src/plugin-sdk/output/sdk.jar pinned-sdk/sdk.jar
+
+      - name: Upload sdk.jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinned-sdk-jar
+          path: pinned-sdk/sdk.jar
+          retention-days: 90
+
+  build:
+    name: Extension Compile Test
+    needs: build-pinned-sdk
+    runs-on: ubuntu-latest
+
+    steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Setup JDK
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 21
 
-      # Make scripts executable
+      # Overwrites the placeholder libs/sdk.jar checked into this repo with the pinned-version
+      # one built above - this repo's own copy is just a stand-in so the project opens/IDE-
+      # indexes cleanly; CI (and anyone building this extension) always uses the pinned build.
+      - name: Use pinned sdk.jar
+        uses: actions/download-artifact@v4
+        with:
+          name: pinned-sdk-jar
+          path: app/libs
+
       - name: Make scripts executable
         run: chmod +x ./gradlew && chmod +x ./compileDebug && chmod +x ./compileRelease
 
-      # Build (Debug)
       - name: Compile Debug
         run: ./compileDebug
-        
-      # Upload extension artifacts
+
       - name: Upload ZIP
         uses: actions/upload-artifact@v4
         with:
