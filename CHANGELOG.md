@@ -28,3 +28,13 @@
   file tree + editor tab integration for a remote folder.
 - Remote command runner (SSH exec) with streamed output, for running builds/tests on the server.
 - Command Palette connect/disconnect toggle.
+
+## 1.0.2
+
+- Fixed: connection failures now show the actual error (exception type + message) in a dialog
+  with a "Salin" (copy) button, instead of a generic "Gagal terhubung, cek konfigurasi" toast
+  with no detail. The detailed error was always being captured internally but had nowhere to
+  go - the Settings screen that used to display it doesn't exist in this API version.
+- Auth now only offers the method actually configured (`publickey` only for key auth, rather
+  than always offering `publickey,password,keyboard-interactive` regardless of `authMethod`),
+  which avoids some servers/JSch combinations failing in confusing ways.

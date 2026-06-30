@@ -62,9 +62,29 @@ class Main : ExtensionAPI() {
                     toast("Terputus dari server")
                 } else {
                     val ok = SshConnectionManager.connect()
-                    toast(if (ok) "Terhubung ke server" else "Gagal terhubung, cek konfigurasi")
+                    if (ok) {
+                        toast("Terhubung ke server")
+                    } else {
+                        showConnectErrorDialog(actionContext.currentActivity)
+                    }
                 }
             }
+        }
+    }
+
+    private fun showConnectErrorDialog(activity: Activity) {
+        val message = SshConnectionManager.lastError ?: "Tidak diketahui (tidak ada detail error)."
+        activity.runOnUiThread {
+            AlertDialog.Builder(activity)
+                .setTitle("Gagal terhubung")
+                .setMessage(message)
+                .setPositiveButton("Salin") { _, _ ->
+                    val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Remote Workspace error", message))
+                    toast("Disalin ke clipboard")
+                }
+                .setNegativeButton("Tutup", null)
+                .show()
         }
     }
 
@@ -102,7 +122,7 @@ class Main : ExtensionAPI() {
                 if (!SshConnectionManager.isConnected) {
                     val ok = SshConnectionManager.connect()
                     if (!ok) {
-                        toast("Gagal terhubung, cek konfigurasi")
+                        showConnectErrorDialog(actionContext.currentActivity)
                         return@launch
                     }
                 }

@@ -3,7 +3,7 @@
   "id": "com.ulul.remoteworkspace",
   "name": "Remote Workspace",
   "mainClass": "com.ulul.remoteworkspace.Main",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Hubungkan ke server development lewat SSH/SFTP dan edit file remote langsung di Xed-Editor (file tree + tab editor native), plus jalankan command di server tanpa membebani penyimpanan/kinerja Android.",
   "author": {
     "displayName": "Ulul",

@@ -40,6 +40,9 @@ object SshConnectionManager {
     /** The remote root currently shown as a sidebar file tree tab, if any. */
     @Volatile var openedRoot: RemoteFileObject? = null
 
+    /** Full message of the last connection failure, for surfacing to the user. */
+    @Volatile var lastError: String? = null
+
     private var session: Session? = null
     private var sftpChannel: ChannelSftp? = null
     private val mutex = Mutex()
@@ -64,7 +67,13 @@ object SshConnectionManager {
                     newSession.setPassword(password)
                 }
                 newSession.setConfig("StrictHostKeyChecking", "no")
-                newSession.setConfig("PreferredAuthentications", "publickey,password,keyboard-interactive")
+                // Only offer the auth method actually configured - offering both can make some
+                // servers/JSch combinations fail in confusing ways (e.g. trying
+                // keyboard-interactive with no UserInfo callback set).
+                newSession.setConfig(
+                    "PreferredAuthentications",
+                    if (authMethod == AuthMethod.PRIVATE_KEY) "publickey" else "password,keyboard-interactive"
+                )
                 newSession.connect(15000)
 
                 val channel = newSession.openChannel("sftp") as ChannelSftp
@@ -72,11 +81,14 @@ object SshConnectionManager {
 
                 session = newSession
                 sftpChannel = channel
+                lastError = null
                 log("Terhubung ke $username@$host:$port")
                 onStateChanged?.invoke(true)
                 true
             } catch (e: Exception) {
-                log("Gagal terhubung: ${e.message}")
+                val detail = "${e::class.simpleName}: ${e.message}"
+                lastError = detail
+                log("Gagal terhubung: $detail")
                 runCatching { session?.disconnect() }
                 session = null
                 sftpChannel = null
