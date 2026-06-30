@@ -94,9 +94,9 @@ object SshConnectionManager {
                 session = null
             }
         }
-        openedRoot?.let { root ->
-            com.rk.activities.main.MainActivity.instance?.drawerViewModel?.removeFileTreeTab(root, false)
-        }
+        // If a workspace tab is still open in the sidebar when we disconnect, clean it up too -
+        // otherwise it's left pointing at a dead connection.
+        openedRoot?.let { root -> com.rk.filetree.removeProject(root, false) }
         openedRoot = null
         onStateChanged?.invoke(false)
         log("Terputus dari server")
