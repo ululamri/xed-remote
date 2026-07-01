@@ -84,10 +84,8 @@ dependencies {
     compileOnly(libs.pine.core)
     compileOnly(libs.androidx.lifecycle.process)
     compileOnly(libs.androidsvg.aar)
-
-    // Real (bundled) dependency: the host app has no SSH/SFTP client, so this extension
-    // ships its own. Drop-in fork of jcraft's JSch, same `com.jcraft.jsch` package.
-    implementation("com.github.mwiede:jsch:2.28.3")
+    // No SSH library needed - we delegate all SSH/SFTP operations to the OpenSSH binaries
+    // already present in Xed-Editor's Ubuntu proot environment (via ubuntuProcess/ShellUtils).
 }
 
 //  ---------------- below is the code for automatically updating the sdk.jar --------------------

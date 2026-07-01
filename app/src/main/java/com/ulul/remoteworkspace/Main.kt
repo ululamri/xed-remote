@@ -4,7 +4,6 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.os.Bundle
-import android.text.InputType
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -28,14 +27,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
- * Targets the extension API actually shipped in Xed-Editor v3.2.9 / versionCode 87 (commit
- * 73835433) - considerably more minimal than the newer "ExtensionContext"-based API: ExtensionAPI
- * takes no constructor argument, is instantiated via a no-arg constructor, and only has
- * onExtensionLoaded(extension) / onUninstalled(extension) - no SettingsContent, no built-in
- * command/scope/settings helpers. Everything those would have given us is recreated by hand
- * below. The good news: FileObject, EditorManager and the sidebar file tree (here exposed as
- * plain top-level functions in com.rk.filetree, simpler than the newer DrawerViewModel API) are
- * all present and unchanged, so native file-tree/editor-tab integration still works.
+ * SSH/SFTP is now delegated entirely to Xed-Editor's own Ubuntu proot environment - the user's
+ * ~/.ssh/config, keys, and known_hosts are read automatically by OpenSSH, exactly as they are in
+ * the built-in terminal. No JSch, no Android-side key path mapping.
  */
 @Keep
 @Suppress("unused")
@@ -48,13 +42,9 @@ class Main : ExtensionAPI() {
         application!!.getSharedPreferences("com.ulul.remoteworkspace_prefs", Context.MODE_PRIVATE)
 
     private val toggleCommand = object : GlobalCommand(commandContext) {
-        override val id: String = "com.ulul.remoteworkspace.toggle"
-
-        override fun getLabel(): String =
-            if (SshConnectionManager.isConnected) "Putuskan Remote Workspace" else "Hubungkan Remote Workspace"
-
+        override val id = "com.ulul.remoteworkspace.toggle"
+        override fun getLabel() = if (SshConnectionManager.isConnected) "Putuskan Remote Workspace" else "Hubungkan Remote Workspace"
         override fun getIcon(): Icon = Icon.TextIcon("SSH")
-
         override fun action(actionContext: ActionContext) {
             scope.launch {
                 if (SshConnectionManager.isConnected) {
@@ -63,7 +53,7 @@ class Main : ExtensionAPI() {
                 } else {
                     val ok = SshConnectionManager.connect()
                     if (ok) {
-                        toast("Terhubung ke server")
+                        toast("Terhubung ke ${SshConnectionManager.host}")
                     } else {
                         showConnectErrorDialog(actionContext.currentActivity)
                     }
@@ -72,41 +62,16 @@ class Main : ExtensionAPI() {
         }
     }
 
-    private fun showConnectErrorDialog(activity: Activity) {
-        val message = SshConnectionManager.lastError ?: "Tidak diketahui (tidak ada detail error)."
-        activity.runOnUiThread {
-            AlertDialog.Builder(activity)
-                .setTitle("Gagal terhubung")
-                .setMessage(message)
-                .setPositiveButton("Salin") { _, _ ->
-                    val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Remote Workspace error", message))
-                    toast("Disalin ke clipboard")
-                }
-                .setNegativeButton("Tutup", null)
-                .show()
-        }
-    }
-
-    // No SettingsContent hook exists in this API version, so configuration happens through a
-    // plain AlertDialog instead, triggered from the Command Palette.
     private val configureCommand = object : GlobalCommand(commandContext) {
-        override val id: String = "com.ulul.remoteworkspace.configure"
-        override fun getLabel(): String = "Konfigurasi Remote Workspace"
+        override val id = "com.ulul.remoteworkspace.configure"
+        override fun getLabel() = "Konfigurasi Remote Workspace"
         override fun getIcon(): Icon = Icon.TextIcon("CFG")
-        override fun action(actionContext: ActionContext) {
-            showConfigDialog(actionContext.currentActivity)
-        }
+        override fun action(actionContext: ActionContext) = showConfigDialog(actionContext.currentActivity)
     }
 
-    // Mirrors what used to be the "Buka sebagai Workspace" / "Tutup Workspace" Settings buttons -
-    // also unreachable now without SettingsContent, so it's a command instead.
     private val workspaceToggleCommand = object : GlobalCommand(commandContext) {
-        override val id: String = "com.ulul.remoteworkspace.toggleworkspace"
-
-        override fun getLabel(): String =
-            if (SshConnectionManager.openedRoot != null) "Tutup Workspace Remote" else "Buka Workspace Remote"
-
+        override val id = "com.ulul.remoteworkspace.toggleworkspace"
+        override fun getLabel() = if (SshConnectionManager.openedRoot != null) "Tutup Workspace Remote" else "Buka Workspace Remote"
         override fun getIcon(): Icon = Icon.TextIcon("DIR")
 
         override fun action(actionContext: ActionContext) {
@@ -117,7 +82,6 @@ class Main : ExtensionAPI() {
                 toast("Workspace ditutup")
                 return
             }
-
             scope.launch {
                 if (!SshConnectionManager.isConnected) {
                     val ok = SshConnectionManager.connect()
@@ -126,19 +90,37 @@ class Main : ExtensionAPI() {
                         return@launch
                     }
                 }
-                val rootAttrs = SshConnectionManager.statOrNull(SshConnectionManager.remoteBasePath)
-                if (rootAttrs == null) {
+                val stat = SshConnectionManager.statOrNull(SshConnectionManager.remoteBasePath)
+                if (stat == null) {
                     toast("Folder tidak ditemukan: ${SshConnectionManager.remoteBasePath}")
                     return@launch
                 }
-                val root = RemoteFileObject(SshConnectionManager.remoteBasePath, rootAttrs)
-                // save=false: a remote FileObject must never be embedded in a persisted drawer
-                // tab list (see RemoteFileObject's class doc) - it would throw or, worse, corrupt
-                // serialization for every other open tab too.
+                val root = RemoteFileObject(SshConnectionManager.remoteBasePath, stat)
+                val activity = MainActivity.instance ?: run {
+                    toast("Tidak bisa mengakses jendela utama")
+                    return@launch
+                }
                 addProject(root, false)
                 SshConnectionManager.openedRoot = root
                 toast("Workspace dibuka di sidebar")
             }
+        }
+    }
+
+    private fun showConnectErrorDialog(activity: Activity) {
+        val message = SshConnectionManager.lastError
+            ?: "Tidak diketahui.\n\nPastikan SSH sudah bisa connect dari terminal Xed-Editor:\nssh ${SshConnectionManager.username}@${SshConnectionManager.host}"
+        activity.runOnUiThread {
+            AlertDialog.Builder(activity)
+                .setTitle("Gagal terhubung ke ${SshConnectionManager.host}")
+                .setMessage(message)
+                .setPositiveButton("Salin") { _, _ ->
+                    val cb = activity.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    cb.setPrimaryClip(android.content.ClipData.newPlainText("error", message))
+                    toast("Disalin ke clipboard")
+                }
+                .setNegativeButton("Tutup", null)
+                .show()
         }
     }
 
@@ -151,86 +133,77 @@ class Main : ExtensionAPI() {
             setPadding(dp(24), dp(16), dp(24), dp(0))
         }
 
-        fun addField(label: String, initial: String, isPassword: Boolean = false): EditText {
-            layout.addView(TextView(activity).apply {
-                text = label
-                setPadding(0, dp(12), 0, dp(2))
-            })
-            val field = EditText(activity).apply {
+        fun label(text: String) = layout.addView(TextView(activity).apply {
+            this.text = text
+            setPadding(0, dp(12), 0, dp(2))
+        })
+
+        fun field(hint: String, initial: String): EditText {
+            val et = EditText(activity).apply {
+                this.hint = hint
                 setText(initial)
-                if (isPassword) {
-                    inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-                }
             }
-            layout.addView(field)
-            return field
+            layout.addView(et)
+            return et
         }
 
-        val hostField = addField("Host", SshConnectionManager.host)
-        val portField = addField("Port", SshConnectionManager.port.toString())
-        val userField = addField("Username", SshConnectionManager.username)
-        val passField = addField("Password (kosongkan jika pakai key)", SshConnectionManager.password, isPassword = true)
-        val keyPathField = addField("Path private key (kosongkan jika pakai password)", SshConnectionManager.privateKeyPath)
-        val keyPassField = addField("Passphrase key (jika ada)", SshConnectionManager.privateKeyPassphrase, isPassword = true)
-        val remoteField = addField("Folder remote (workspace root)", SshConnectionManager.remoteBasePath)
+        label("Host")
+        val hostField = field("contoh: 192.168.1.10", SshConnectionManager.host)
+        label("Port")
+        val portField = field("22", SshConnectionManager.port.toString())
+        label("Username")
+        val userField = field("contoh: ulul", SshConnectionManager.username)
+        label("Folder remote (workspace root)")
+        val remoteField = field("contoh: /home/ulul/project", SshConnectionManager.remoteBasePath)
+        label("SSH args tambahan (opsional)")
+        val argsField = field("contoh: -i /home/.ssh/my_key", SshConnectionManager.extraSshArgs)
 
         layout.addView(TextView(activity).apply {
-            text = "Catatan: kalau path key diisi, key dipakai (bukan password). " +
-                "Pastikan key ada di storage yang bisa diakses Xed-Editor, bukan di home Termux."
+            text = "SSH key & konfigurasi dibaca dari ~/.ssh/ Ubuntu Xed-Editor — sama persis seperti yang sudah kamu setup di terminal bawaan Xed-Editor. Tidak perlu input key/password di sini."
             setPadding(0, dp(12), 0, dp(4))
             alpha = 0.7f
         })
 
-        val scrollView = ScrollView(activity).apply { addView(layout) }
-
         AlertDialog.Builder(activity)
             .setTitle("Konfigurasi Remote Workspace")
-            .setView(scrollView)
-            .setPositiveButton("Simpan") { _, _ ->
-                val useKey = keyPathField.text.toString().isNotBlank()
+            .setView(ScrollView(activity).apply { addView(layout) })
+            .setPositiveButton("Simpan & Tes Koneksi") { _, _ ->
                 SshConnectionManager.host = hostField.text.toString().trim()
                 SshConnectionManager.port = portField.text.toString().toIntOrNull() ?: 22
                 SshConnectionManager.username = userField.text.toString().trim()
-                SshConnectionManager.authMethod = if (useKey) AuthMethod.PRIVATE_KEY else AuthMethod.PASSWORD
-                SshConnectionManager.password = passField.text.toString()
-                SshConnectionManager.privateKeyPath = keyPathField.text.toString().trim()
-                SshConnectionManager.privateKeyPassphrase = keyPassField.text.toString()
                 SshConnectionManager.remoteBasePath = remoteField.text.toString().trim().ifEmpty { "/" }
-
-                prefs().edit()
-                    .putString(KEY_HOST, SshConnectionManager.host)
-                    .putInt(KEY_PORT, SshConnectionManager.port)
-                    .putString(KEY_USER, SshConnectionManager.username)
-                    .putString(KEY_AUTH, if (useKey) "key" else "password")
-                    .putString(KEY_PASSWORD, SshConnectionManager.password)
-                    .putString(KEY_KEY_PATH, SshConnectionManager.privateKeyPath)
-                    .putString(KEY_KEY_PASSPHRASE, SshConnectionManager.privateKeyPassphrase)
-                    .putString(KEY_REMOTE_PATH, SshConnectionManager.remoteBasePath)
-                    .apply()
-
-                toast("Konfigurasi disimpan. Gunakan \"Hubungkan Remote Workspace\" untuk connect.")
+                SshConnectionManager.extraSshArgs = argsField.text.toString().trim()
+                persistConfig()
+                scope.launch {
+                    val ok = SshConnectionManager.connect()
+                    if (ok) {
+                        toast("Terhubung ke ${SshConnectionManager.host}")
+                    } else {
+                        showConnectErrorDialog(activity)
+                    }
+                }
             }
             .setNegativeButton("Batal", null)
             .show()
     }
 
+    private fun persistConfig() {
+        prefs().edit()
+            .putString(KEY_HOST, SshConnectionManager.host)
+            .putInt(KEY_PORT, SshConnectionManager.port)
+            .putString(KEY_USER, SshConnectionManager.username)
+            .putString(KEY_REMOTE_PATH, SshConnectionManager.remoteBasePath)
+            .putString(KEY_EXTRA_ARGS, SshConnectionManager.extraSshArgs)
+            .apply()
+    }
+
     override fun onExtensionLoaded(extension: Extension) {
         val p = prefs()
-        SshConnectionManager.host = p.getString(KEY_HOST, SshConnectionManager.host) ?: SshConnectionManager.host
-        SshConnectionManager.port = p.getInt(KEY_PORT, SshConnectionManager.port)
-        SshConnectionManager.username = p.getString(KEY_USER, SshConnectionManager.username) ?: SshConnectionManager.username
-        SshConnectionManager.authMethod = if (p.getString(KEY_AUTH, "password") == "key") {
-            AuthMethod.PRIVATE_KEY
-        } else {
-            AuthMethod.PASSWORD
-        }
-        SshConnectionManager.password = p.getString(KEY_PASSWORD, SshConnectionManager.password) ?: SshConnectionManager.password
-        SshConnectionManager.privateKeyPath =
-            p.getString(KEY_KEY_PATH, SshConnectionManager.privateKeyPath) ?: SshConnectionManager.privateKeyPath
-        SshConnectionManager.privateKeyPassphrase =
-            p.getString(KEY_KEY_PASSPHRASE, SshConnectionManager.privateKeyPassphrase) ?: SshConnectionManager.privateKeyPassphrase
-        SshConnectionManager.remoteBasePath =
-            p.getString(KEY_REMOTE_PATH, SshConnectionManager.remoteBasePath) ?: SshConnectionManager.remoteBasePath
+        SshConnectionManager.host = p.getString(KEY_HOST, "") ?: ""
+        SshConnectionManager.port = p.getInt(KEY_PORT, 22)
+        SshConnectionManager.username = p.getString(KEY_USER, "") ?: ""
+        SshConnectionManager.remoteBasePath = p.getString(KEY_REMOTE_PATH, "/") ?: "/"
+        SshConnectionManager.extraSshArgs = p.getString(KEY_EXTRA_ARGS, "") ?: ""
 
         CommandProvider.registerCommand(toggleCommand)
         CommandProvider.registerCommand(configureCommand)
@@ -238,7 +211,7 @@ class Main : ExtensionAPI() {
     }
 
     override fun onUninstalled(extension: Extension) {
-        scope.launch { SshConnectionManager.disconnect() }
+        SshConnectionManager.disconnect()
         CommandProvider.unregisterCommand(toggleCommand)
         CommandProvider.unregisterCommand(configureCommand)
         CommandProvider.unregisterCommand(workspaceToggleCommand)
@@ -256,10 +229,7 @@ class Main : ExtensionAPI() {
         const val KEY_HOST = "host"
         const val KEY_PORT = "port"
         const val KEY_USER = "username"
-        const val KEY_AUTH = "auth_method"
-        const val KEY_PASSWORD = "password"
-        const val KEY_KEY_PATH = "key_path"
-        const val KEY_KEY_PASSPHRASE = "key_passphrase"
         const val KEY_REMOTE_PATH = "remote_path"
+        const val KEY_EXTRA_ARGS = "extra_ssh_args"
     }
 }
