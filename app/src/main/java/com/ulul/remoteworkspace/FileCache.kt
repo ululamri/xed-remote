@@ -39,24 +39,37 @@ object FileCache {
             override fun removeEldestEntry(eldest: Map.Entry<String, Pair<File, Long>>): Boolean = false
         }
 
-    private val cacheDir: File get() = File(sandboxHomeDir(), CACHE_DIR_NAME)
+    private val cacheDir: File get() = File(sandboxHomeDir(), CACHE_DIR_NAME).also { it.mkdirs() }
 
     /** Total bytes currently tracked in the index. */
     private var totalBytes: Long = 0L
 
-    suspend fun init() = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            cacheDir.mkdirs()
-            // Rebuild index from whatever is on disk already (survives app restarts).
-            cacheDir.listFiles()?.forEach { f ->
-                if (f.isFile) {
-                    index[f.name] = f to f.length()
-                    totalBytes += f.length()
+    @Volatile private var indexed = false
+
+    /**
+     * Lazily scans the cache directory into the index on first access.
+     * Called automatically from get()/put() - no explicit init() at startup needed.
+     * This keeps extension load time near-zero.
+     */
+    private suspend fun ensureIndexed() {
+        if (indexed) return
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                if (indexed) return@withLock
+                cacheDir.listFiles()?.forEach { f ->
+                    if (f.isFile && !index.containsKey(f.name)) {
+                        index[f.name] = f to f.length()
+                        totalBytes += f.length()
+                    }
                 }
+                evictIfNeeded()
+                indexed = true
             }
-            evictIfNeeded()
         }
     }
+
+    /** Kept for compatibility; now a no-op since the cache is lazy. */
+    suspend fun init() { ensureIndexed() }
 
     // ---- public API ----
 
@@ -65,6 +78,7 @@ object FileCache {
      * Moves the entry to "most recently used" position on hit.
      */
     suspend fun get(remotePath: String, mtime: Long): ByteArray? = withContext(Dispatchers.IO) {
+        ensureIndexed()
         mutex.withLock {
             val key = cacheKey(remotePath, mtime)
             val (file, _) = index[key] ?: return@withLock null
@@ -72,16 +86,12 @@ object FileCache {
                 index.remove(key)
                 return@withLock null
             }
-            // Access-order LinkedHashMap already updated the LRU position on the get() above.
             file.readBytes()
         }
     }
 
-    /**
-     * Stores [content] for [remotePath] with [mtime].
-     * Evicts stale entries (same path, different mtime) and triggers LRU eviction if over cap.
-     */
     suspend fun put(remotePath: String, mtime: Long, content: ByteArray) = withContext(Dispatchers.IO) {
+        ensureIndexed()
         mutex.withLock {
             // Remove any stale entry for this path (different mtime).
             evictPath(remotePath, exceptMtime = mtime)

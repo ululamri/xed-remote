@@ -105,7 +105,8 @@ class Main : ExtensionAPI() {
      * 2. The SSH connection multiplexes through the existing ControlMaster socket (no re-auth,
      *    instant connect).
      * 3. The user gets a real shell ON the remote server - cd, run builds, git, etc, all remote.
-     * 4. It's sandbox=false so the ssh binary from the Ubuntu proot PATH is used directly.
+     * 4. sandbox=true: MkSession wraps the command as [sandbox.sh, "ssh", ...args], so OpenSSH
+     *    from the Ubuntu proot is used — where it exists and has access to ~/.ssh/config & keys.
      *
      * This is the closest equivalent to VS Code's "integrated remote terminal".
      */
@@ -151,13 +152,18 @@ class Main : ExtensionAPI() {
 
                 activity.runOnUiThread {
                     launchTerminal(
-                        activity,
+                        activity,   // Activity (not Context - verified from sdk.jar)
                         TerminalCommand(
-                            sandbox = false,        // Run ssh binary directly, not inside proot.
+                            // sandbox=true: MkSession builds [sandbox.sh, "ssh", ...args]
+                            // so OpenSSH inside the Ubuntu proot is used - where `ssh` exists,
+                            // keys/config are available, and the ControlPath socket is reachable.
+                            // sandbox=false would exec "ssh" directly on Android where it doesn't exist
+                            // → the "exec(ssh): No such file or directory" error we had before.
+                            sandbox = true,
                             exe = "ssh",
                             args = sshArgs.toTypedArray(),
                             id = "remote-workspace-terminal-${System.currentTimeMillis()}",
-                            terminatePreviousSession = false,  // Allow multiple remote terminals.
+                            terminatePreviousSession = false,
                             workingDir = null
                         )
                     )
@@ -266,7 +272,9 @@ class Main : ExtensionAPI() {
         ConnectionManager.remoteBasePath = p.getString(KEY_REMOTE_PATH, "/") ?: "/"
         ConnectionManager.extraSshArgs = p.getString(KEY_EXTRA_ARGS, "") ?: ""
 
-        scope.launch { FileCache.init() }
+        // FileCache is lazy - no disk scan on startup. It initialises on first cache operation
+        // (first time a remote file is read after connecting). This keeps extension load time
+        // near-zero and avoids any lag on Xed-Editor startup.
 
         CommandProvider.registerCommand(connectCommand)
         CommandProvider.registerCommand(configureCommand)
@@ -293,7 +301,19 @@ class Main : ExtensionAPI() {
     override fun onActivityResumed(activity: Activity) {}
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
     override fun onActivityStarted(activity: Activity) {}
-    override fun onActivityStopped(activity: Activity) {}
+
+    override fun onActivityStopped(activity: Activity) {
+        // Kill the ControlMaster background process when the app goes to background.
+        // Without this, `ssh -M -f -N` keeps running in the proot environment between sessions.
+        // On next app open: the socket still exists, isConnected returns true, the proot needs
+        // to manage the zombie master process - all of this adds lag at startup.
+        // With this: clean slate every time the app is opened. Connect is explicit (Command
+        // Palette), fast (ControlMaster starts fresh), and doesn't surprise the user with a
+        // "still connected" state from a previous session that may have been hours ago.
+        if (ConnectionManager.isConnected) {
+            scope.launch { ConnectionManager.disconnect() }
+        }
+    }
 
     // ---- Helpers ----
 
